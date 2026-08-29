@@ -35,6 +35,14 @@ jobs:
           print('Generator extracted:', len(lines), 'lines')
           PYEXTRACT
 
+      - name: Install Blender runtime libraries
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6 libwayland-client0
+
       - name: Download Blender
         shell: bash
         run: |
