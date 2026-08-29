@@ -1,0 +1,73 @@
+name: PR Garden Blender Builder
+
+on:
+  pull_request:
+    branches:
+      - master
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+env:
+  BLENDER_VERSION: "4.2.5"
+
+jobs:
+  build-garden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract Blender generator from branch workflow
+        shell: bash
+        run: |
+          python3 - <<'PYEXTRACT'
+          from pathlib import Path
+          src = Path('.github/workflows/generate-garden-blend.yml').read_text(encoding='utf-8')
+          marker = "          cat > create_scene.py <<'PY'\n"
+          start = src.index(marker) + len(marker)
+          end = src.index("\n          PY\n", start)
+          body = src[start:end]
+          lines = [line[10:] if line.startswith("          ") else line for line in body.splitlines()]
+          Path('create_scene.py').write_text("\n".join(lines) + "\n", encoding='utf-8')
+          compile(Path('create_scene.py').read_text(encoding='utf-8'), 'create_scene.py', 'exec')
+          print('Generator extracted:', len(lines), 'lines')
+          PYEXTRACT
+
+      - name: Download Blender
+        shell: bash
+        run: |
+          curl --fail --location --retry 5 \
+            "https://download.blender.org/release/Blender4.2/blender-${BLENDER_VERSION}-linux-x64.tar.xz" \
+            --output blender.tar.xz
+          tar -xf blender.tar.xz
+          "./blender-${BLENDER_VERSION}-linux-x64/blender" --version
+
+      - name: Generate scene
+        shell: bash
+        run: |
+          mkdir -p build
+          "./blender-${BLENDER_VERSION}-linux-x64/blender" --background --factory-startup --python create_scene.py
+
+      - name: Validate generated files
+        shell: bash
+        run: |
+          test -s build/jardin_tropical_unity.blend
+          test -s build/jardin_tropical_rendu.png
+          test -s build/jardin_tropical_unity.glb
+          file build/jardin_tropical_unity.blend
+          file build/jardin_tropical_rendu.png
+          cat build/rapport_scene.txt
+
+      - name: Upload Blender garden package
+        uses: actions/upload-artifact@v4
+        with:
+          name: jardin-tropical-blender
+          path: |
+            build/jardin_tropical_unity.blend
+            build/jardin_tropical_rendu.png
+            build/jardin_tropical_unity.glb
+            build/rapport_scene.txt
+          retention-days: 3
+          compression-level: 6
