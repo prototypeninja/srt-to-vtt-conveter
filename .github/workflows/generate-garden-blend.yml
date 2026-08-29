@@ -1,0 +1,410 @@
+name: Build Tropical Garden Blender Scene
+
+on:
+  push:
+    branches:
+      - automation/garden-blend-20260829
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BLENDER_VERSION: "4.2.5"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Blender
+        shell: bash
+        run: |
+          curl --fail --location --retry 5 \
+            "https://download.blender.org/release/Blender4.2/blender-${BLENDER_VERSION}-linux-x64.tar.xz" \
+            --output blender.tar.xz
+          tar -xf blender.tar.xz
+          "./blender-${BLENDER_VERSION}-linux-x64/blender" --version
+
+      - name: Create Blender generator
+        shell: bash
+        run: |
+          cat > create_scene.py <<'PY'
+          import bpy, math, random
+          from pathlib import Path
+          from mathutils import Vector
+
+          random.seed(29082026)
+          OUT = Path.cwd() / "build"
+          OUT.mkdir(exist_ok=True)
+          bpy.ops.wm.read_factory_settings(use_empty=True)
+          sc = bpy.context.scene
+          sc.name = "Jardin tropical - Unity Android"
+          sc.unit_settings.system = 'METRIC'
+          sc.unit_settings.scale_length = 1.0
+          sc.render.engine = 'BLENDER_EEVEE_NEXT'
+          sc.render.resolution_x = 1200
+          sc.render.resolution_y = 900
+          sc.render.resolution_percentage = 100
+          sc.render.image_settings.file_format = 'PNG'
+          sc.render.filepath = str(OUT / "jardin_tropical_rendu.png")
+          sc.render.film_transparent = False
+          try:
+              sc.view_settings.look = 'AgX - Medium High Contrast'
+          except Exception:
+              pass
+          sc.view_settings.exposure = 0.7
+
+          def collection(name):
+              c = bpy.data.collections.new(name)
+              sc.collection.children.link(c)
+              return c
+
+          ENV = collection("01_Environnement")
+          FURN = collection("02_Table_et_4_chaises")
+          VEG = collection("03_Vegetation")
+          LIGHT = collection("04_Eclairage")
+          COLL = collection("05_Colliders_Unity")
+
+          def relink(o, coll):
+              for c in list(o.users_collection):
+                  c.objects.unlink(o)
+              coll.objects.link(o)
+              return o
+
+          def mat(name, color, rough=.65, metal=0.0, emission=None, strength=0.0):
+              m = bpy.data.materials.new(name)
+              m.use_nodes = True
+              b = m.node_tree.nodes.get("Principled BSDF")
+              b.inputs["Base Color"].default_value = (*color, 1)
+              b.inputs["Roughness"].default_value = rough
+              b.inputs["Metallic"].default_value = metal
+              if emission is not None:
+                  key = "Emission Color" if "Emission Color" in b.inputs else "Emission"
+                  b.inputs[key].default_value = (*emission, 1)
+                  if "Emission Strength" in b.inputs:
+                      b.inputs["Emission Strength"].default_value = strength
+              return m
+
+          GRASS = mat("Pelouse", (0.055, .28, .025), .9)
+          GRASS2 = mat("Herbe_claire", (.13, .48, .035), .85)
+          WALL = mat("Mur_creme", (.73, .58, .36), .93)
+          SOIL = mat("Terre", (.10, .045, .018), 1.0)
+          STONE = mat("Pas_japonais", (.55, .46, .31), .9)
+          METAL = mat("Metal_noir", (.012, .014, .012), .28, .72)
+          ROPE = mat("Cordage_noir", (.008, .010, .008), .5, .18)
+          CUSHION = mat("Coussin_ivoire", (.78, .68, .52), .88)
+          POTW = mat("Pot_ceramique", (.78, .69, .54), .28)
+          TERRA = mat("Terre_cuite", (.48, .19, .07), .78)
+          BARK = mat("Ecorce", (.22, .10, .025), .9)
+          PALMB = mat("Tronc_palmier", (.36, .27, .08), .88)
+          LD = mat("Feuille_vert_fonce", (.022, .15, .018), .72)
+          LM = mat("Feuille_vert", (.045, .31, .033), .7)
+          LL = mat("Feuille_vert_clair", (.18, .52, .045), .7)
+          HY = mat("Haie_jaune_vert", (.31, .51, .035), .76)
+          RED = mat("Cordyline_rouge", (.66, .025, .012), .68)
+          PINK = mat("Fleurs_roses", (.92, .035, .16), .62)
+          YELLOW = mat("Fleurs_jaunes", (1.0, .56, .025), .62)
+          GLOW = mat("Lanterne_lumineuse", (.18, .08, .02), .22, 0, (1.0, .24, .025), 4.0)
+
+          def smooth(o):
+              if o.type == 'MESH':
+                  for p in o.data.polygons:
+                      p.use_smooth = True
+              return o
+
+          def bevel(o, width=.02, seg=2):
+              if width:
+                  m = o.modifiers.new("Chanfrein", 'BEVEL')
+                  m.width = width
+                  m.segments = seg
+                  m.limit_method = 'ANGLE'
+              return o
+
+          def cube(name, dims, loc, material, coll, rz=0, bev=0):
+              bpy.ops.mesh.primitive_cube_add(location=loc, rotation=(0,0,rz))
+              o = bpy.context.object
+              o.name = name
+              o.dimensions = dims
+              bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+              if material: o.data.materials.append(material)
+              bevel(o, bev)
+              return relink(o, coll)
+
+          def cyl(name, r, depth, loc, material, coll, verts=12, rot=(0,0,0), bev=0):
+              bpy.ops.mesh.primitive_cylinder_add(vertices=verts, radius=r, depth=depth, location=loc, rotation=rot)
+              o = bpy.context.object
+              o.name = name
+              if material: o.data.materials.append(material)
+              bevel(o, bev)
+              return relink(o, coll)
+
+          def cone(name, r1, r2, depth, loc, material, coll, verts=10):
+              bpy.ops.mesh.primitive_cone_add(vertices=verts, radius1=r1, radius2=r2, depth=depth, location=loc)
+              o=bpy.context.object; o.name=name
+              if material: o.data.materials.append(material)
+              smooth(o)
+              return relink(o, coll)
+
+          def ico(name, r, loc, material, coll, scale=(1,1,1), sub=1):
+              bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=sub, radius=r, location=loc)
+              o=bpy.context.object; o.name=name; o.scale=scale
+              bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+              if material: o.data.materials.append(material)
+              smooth(o)
+              return relink(o, coll)
+
+          def torus(name, major, minor, loc, material, coll, seg=40):
+              bpy.ops.mesh.primitive_torus_add(major_segments=seg, minor_segments=8, major_radius=major, minor_radius=minor, location=loc)
+              o=bpy.context.object; o.name=name
+              if material: o.data.materials.append(material)
+              smooth(o)
+              return relink(o, coll)
+
+          def curve(name, pts, radius, material, coll, cyclic=False):
+              data=bpy.data.curves.new(name+"_data", 'CURVE')
+              data.dimensions='3D'; data.resolution_u=2; data.bevel_depth=radius; data.bevel_resolution=2
+              s=data.splines.new('BEZIER'); s.bezier_points.add(len(pts)-1)
+              for bp,p in zip(s.bezier_points,pts):
+                  bp.co=p; bp.handle_left_type='AUTO'; bp.handle_right_type='AUTO'
+              s.use_cyclic_u=cyclic
+              o=bpy.data.objects.new(name,data); coll.objects.link(o)
+              if material: data.materials.append(material)
+              return o
+
+          def rod(name, a, b, r, material, coll, verts=8):
+              a,b=Vector(a),Vector(b); d=b-a
+              o=cyl(name,r,d.length,(a+b)/2,material,coll,verts)
+              o.rotation_mode='QUATERNION'; o.rotation_quaternion=d.to_track_quat('Z','Y'); o.rotation_mode='XYZ'
+              return o
+
+          def leaf(name, length, width, loc, rot, material, coll, bend=.18, n=7):
+              vs=[]; fs=[]
+              for i in range(n+1):
+                  t=i/n; y=length*t; w=width*(math.sin(math.pi*t)**.7); z=bend*math.sin(math.pi*t)-.07*t*t
+                  vs += [(-w,y,z+.005),(w,y,z+.005),(-w,y,z-.005),(w,y,z-.005)]
+              for i in range(n):
+                  a=i*4; b=(i+1)*4
+                  fs += [(a,b,b+1,a+1),(a+2,a+3,b+3,b+2),(a,a+2,b+2,b),(a+1,b+1,b+3,a+3)]
+              me=bpy.data.meshes.new(name+"_mesh"); me.from_pydata(vs,[],fs); me.update(); me.materials.append(material)
+              o=bpy.data.objects.new(name,me); coll.objects.link(o); o.location=loc; o.rotation_euler=rot
+              return o
+
+          # Environnement
+          cube("Pelouse",(10,8.2,.12),(0,0,-.06),GRASS,ENV,bev=.025)
+          cube("Mur_arriere",(10,.20,2.9),(0,3.95,1.45),WALL,ENV,bev=.035)
+          cube("Massif_arriere",(9.5,1.0,.10),(0,3.35,.025),SOIL,ENV,bev=.04)
+          cube("Massif_gauche",(1.0,6.3,.10),(-4.35,.7,.025),SOIL,ENV,bev=.04)
+          for i in range(7):
+              cube(f"Pas_japonais_{i+1}",(.76,.46,.075),(-3.55+.13*i,-2.65+.66*i,.04),STONE,ENV,random.uniform(-.10,.10),.06)
+
+          # Touffes d'herbe très légères
+          vs=[]; fs=[]
+          for i in range(520):
+              x=random.uniform(-4.8,4.8); y=random.uniform(-3.8,3.7)
+              if abs(x)<2.2 and -2.2<y<1.9 and random.random()<.65: continue
+              h=random.uniform(.07,.16); w=random.uniform(.008,.018); a=random.random()*math.tau
+              for off in (0,math.pi/2):
+                  dx=math.cos(a+off)*w; dy=math.sin(a+off)*w; k=len(vs)
+                  vs += [(x-dx,y-dy,.01),(x+dx,y+dy,.01),(x+dx*.12,y+dy*.12,h),(x-dx*.12,y-dy*.12,h)]
+                  fs.append((k,k+1,k+2,k+3))
+          me=bpy.data.meshes.new("Touffes_herbe_mesh"); me.from_pydata(vs,[],fs); me.update(); me.materials.append(GRASS2)
+          ENV.objects.link(bpy.data.objects.new("Touffes_herbe",me))
+
+          # Table ronde à lattes
+          for i,y in enumerate([-.84,-.70,-.56,-.42,-.28,-.14,0,.14,.28,.42,.56,.70,.84]):
+              length=2*math.sqrt(max(.01,.96*.96-y*y))
+              cube(f"Table_latte_{i}",(length,.105,.055),(0,y,.80),METAL,FURN,bev=.016)
+          torus("Table_bord",1.015,.045,(0,0,.81),METAL,FURN,56)
+          cyl("Table_pied_central",.115,.68,(0,0,.43),METAL,FURN,12,bev=.015)
+          for i,a in enumerate((0,math.pi/2,math.pi,3*math.pi/2)):
+              cube(f"Table_pattem_{i}",(.72,.10,.07),(.28*math.cos(a),.28*math.sin(a),.075),METAL,FURN,a,.022)
+          cyl("Pot_central",.16,.22,(0,0,.95),POTW,FURN,24,bev=.015)
+          torus("Pot_central_bord",.155,.018,(0,0,1.065),POTW,FURN,28)
+          for i in range(20):
+              leaf(f"Plante_table_{i}",random.uniform(.20,.34),random.uniform(.035,.065),(0,0,1.055),
+                   (random.uniform(-.4,.4),random.uniform(-.4,.4),math.tau*i/20),LL if i%3 else LM,FURN,.07,5)
+
+          def W(cx,cy,a,x,y,z):
+              return (cx+x*math.cos(a)-y*math.sin(a), cy+x*math.sin(a)+y*math.cos(a), z)
+
+          def chair(name,cx,cy,a):
+              cube(name+"_assise",(.72,.58,.07),W(cx,cy,a,0,0,.50),METAL,FURN,a,.025)
+              cube(name+"_coussin",(.64,.51,.10),W(cx,cy,a,0,.01,.57),CUSHION,FURN,a,.07)
+              for j,(x,y) in enumerate(((-.32,-.23),(.32,-.23),(-.32,.23),(.32,.23))):
+                  rod(name+f"_jambe_{j}",W(cx,cy,a,x,y,.49),W(cx,cy,a,x*1.15,y*1.15,.05),.027,METAL,FURN)
+              back=[W(cx,cy,a,-.38,-.30,.50),W(cx,cy,a,-.43,-.34,.82),W(cx,cy,a,-.30,-.38,1.10),
+                    W(cx,cy,a,0,-.40,1.21),W(cx,cy,a,.30,-.38,1.10),W(cx,cy,a,.43,-.34,.82),W(cx,cy,a,.38,-.30,.50)]
+              curve(name+"_dossier_cadre",back,.035,METAL,FURN)
+              for j,x in enumerate([-.31,-.25,-.19,-.13,-.065,0,.065,.13,.19,.25,.31]):
+                  top=max(.79,1.20-.72*(abs(x)/.43)**2)
+                  curve(name+f"_corde_{j}",[W(cx,cy,a,x,-.29,.52),W(cx,cy,a,x*1.03,-.35,.74),W(cx,cy,a,x*.95,-.39,top)],.010,ROPE,FURN)
+              for s in (-1,1):
+                  curve(name+f"_accoudoir_{s}",[W(cx,cy,a,.38*s,.26,.56),W(cx,cy,a,.43*s,.11,.73),W(cx,cy,a,.41*s,-.31,.84)],.035,METAL,FURN)
+                  rod(name+f"_support_{s}",W(cx,cy,a,.37*s,.23,.50),W(cx,cy,a,.43*s,.12,.72),.024,METAL,FURN)
+
+          chair("Chaise_avant_gauche",-1.22,-1.42,0)
+          chair("Chaise_avant_droite",1.22,-1.42,0)
+          chair("Chaise_arriere_gauche",-1.28,1.25,math.pi)
+          chair("Chaise_arriere_droite",1.28,1.25,math.pi)
+
+          # Végétation
+          def shrub(name,x,y,z,r,count=8,mats=(LD,LM,LL),stretch=(1,1,.8)):
+              for i in range(count):
+                  a=random.random()*math.tau; rr=r*random.uniform(.08,.72); q=r*random.uniform(.38,.62)
+                  ico(f"{name}_{i}",q,(x+rr*math.cos(a),y+rr*math.sin(a),z+random.uniform(.1,.42)*r),random.choice(mats),VEG,
+                      (stretch[0]*random.uniform(.8,1.2),stretch[1]*random.uniform(.8,1.2),stretch[2]*random.uniform(.8,1.2)))
+
+          def hedge(name,a,b,count,r,material):
+              a,b=Vector(a),Vector(b)
+              for i in range(count):
+                  p=a.lerp(b,i/(count-1)); p.x+=random.uniform(-.05,.05); p.y+=random.uniform(-.04,.04)
+                  ico(f"{name}_{i}",r*random.uniform(.85,1.12),p,material,VEG,(1.16,1,.72))
+
+          def broad(name,x,y,z,count,scale,red=False):
+              for i in range(count):
+                  leaf(f"{name}_{i}",random.uniform(.72,1.25)*scale,random.uniform(.13,.22)*scale,(x,y,z),
+                       (random.uniform(-.12,.12),random.uniform(-.78,-.30),math.tau*i/count+random.uniform(-.15,.15)),
+                       RED if red else random.choice((LD,LM,LL)),VEG,.20*scale,8)
+
+          def tree(name,x,y,h,r,count):
+              cone(name+"_tronc",.26,.13,h,(x,y,h/2),BARK,VEG,11)
+              for i in range(count):
+                  a=random.random()*math.tau; rr=r*math.sqrt(random.random())
+                  ico(f"{name}_feuillage_{i}",random.uniform(.40,.67),(x+rr*math.cos(a),y+rr*math.sin(a),h*.82+random.uniform(-.50,.78)),
+                      random.choice((LD,LM,LL)),VEG,(random.uniform(.85,1.2),random.uniform(.85,1.2),random.uniform(.65,1)))
+
+          def palm(name,x,y,h,fronds):
+              for i in range(8):
+                  t=i/8; sh=h/8
+                  cone(f"{name}_tronc_{i}",.105*(1-.22*t),.095*(1-.22*t),sh*1.03,(x+.05*math.sin(t*2.2),y+.025*math.cos(t*2),sh*(i+.5)),PALMB,VEG,9)
+              crown=Vector((x+.05*math.sin(2.2),y+.025*math.cos(2),h))
+              for i in range(fronds):
+                  yaw=math.tau*i/fronds+random.uniform(-.14,.14); elev=random.uniform(-.10,.27); L=random.uniform(1.35,1.75)
+                  f=Vector((math.cos(yaw)*math.cos(elev),math.sin(yaw)*math.cos(elev),math.sin(elev))).normalized()
+                  side=Vector((-math.sin(yaw),math.cos(yaw),0))
+                  pts=[]
+                  for j in range(5):
+                      t=j/4; p=crown+f*L*t+Vector((0,0,.28*math.sin(math.pi*t)-.34*t*t)); pts.append(tuple(p))
+                  curve(f"{name}_fronde_{i}",pts,.018,PALMB,VEG)
+                  vs=[]; fs=[]
+                  for t in (.12,.21,.30,.39,.48,.57,.66,.75,.84,.92):
+                      p=crown+f*L*t+Vector((0,0,.28*math.sin(math.pi*t)-.34*t*t)); leafL=(.50*(1-t)+.15)*L/1.6
+                      for sign in (-1,1):
+                          d=(side*sign+f*.18+Vector((0,0,-.20-.16*t))).normalized(); e=p+d*leafL; perp=d.cross(Vector((0,0,1)))
+                          if perp.length<.01: perp=side.copy()
+                          perp.normalize(); perp*=.032*(1-.35*t); k=len(vs)
+                          vs += [tuple(p-perp),tuple(p+perp),tuple(e+perp*.08),tuple(e-perp*.08)]; fs.append((k,k+1,k+2,k+3))
+                  me=bpy.data.meshes.new(f"{name}_leaflets_{i}_mesh"); me.from_pydata(vs,[],fs); me.update(); me.materials.append(LL if i%3==0 else LM)
+                  VEG.objects.link(bpy.data.objects.new(f"{name}_leaflets_{i}",me))
+
+          hedge("Haie_arriere",(-3.85,3.02,.23),(3.85,3.02,.23),42,.19,HY)
+          hedge("Haie_gauche",(-3.90,-2.45,.23),(-3.90,2.75,.23),29,.19,HY)
+          for i,x in enumerate((-3.5,-2.8,-2.1,-1.4,-.7,0,.75,1.5,2.25,3.15)):
+              shrub(f"Buisson_arriere_{i}",x,3.35,.24,random.uniform(.43,.61),random.randint(7,10))
+          broad("Grandes_feuilles_gauche",-3.40,2.67,.06,24,1.08)
+          broad("Feuilles_gauche_2",-2.72,3.10,.06,17,.88)
+          broad("Cordyline_rouge",-3.18,2.82,.07,18,.78,True)
+          for i,(x,h) in enumerate(((-1.65,2.2),(-.75,2.7),(.20,3.1),(.90,2.2))):
+              cone(f"Arbuste_vertical_{i}_tronc",.07,.03,h,(x,3.48,h/2),BARK,VEG,8)
+              shrub(f"Arbuste_vertical_{i}",x,3.48,h*.75,.56 if i!=2 else .72,10 if i!=2 else 14,stretch=(.9,.72,1.2))
+          palm("Palmier_principal",2.55,3.20,4.25,10)
+          palm("Palmier_second",3.05,3.32,3.67,9)
+          palm("Palmier_trois",2.18,3.40,3.42,8)
+          shrub("Buisson_droit",3.65,3.33,.40,.82,14,(LD,LM),(.9,.72,1.28))
+          shrub("Buisson_fleurs_roses",3.35,2.85,.25,.63,12,(LD,LM),(1.15,.9,.8))
+          for i in range(25):
+              a=random.random()*math.tau; rr=random.uniform(.10,.55)
+              ico(f"Fleur_rose_{i}",random.uniform(.035,.065),(3.35+rr*math.cos(a),2.85+rr*math.sin(a),.48+random.uniform(0,.32)),PINK,VEG,(1.1,1,.7))
+          shrub("Buisson_fleurs_jaunes",4.05,3.0,.25,.53,10,(LD,LM),(1.1,.9,.8))
+          for i in range(16):
+              a=random.random()*math.tau; rr=random.uniform(.08,.45)
+              ico(f"Fleur_jaune_{i}",random.uniform(.035,.06),(4.05+rr*math.cos(a),3.0+rr*math.sin(a),.45+random.uniform(0,.27)),YELLOW,VEG,(1.1,1,.7))
+          for i,(x,y,r) in enumerate(((3.22,2.45,.23),(3.75,2.48,.27),(4.20,2.55,.31))):
+              cone(f"Pot_droit_{i}",r*.82,r,r*1.25,(x,y,r*.62),TERRA,VEG,18)
+              torus(f"Pot_droit_bord_{i}",r*.98,.025,(x,y,r*1.27),TERRA,VEG,24)
+          tree("Grand_arbre_gauche",-4.25,4.28,5.5,1.55,34)
+          tree("Arbre_centre_fond",.25,4.55,4.6,1.15,24)
+          tree("Arbre_droit_fond",4.10,4.45,5.0,1.25,28)
+
+          # Lanterne murale
+          cube("Lanterne_plaque",(.16,.055,.28),(-2.35,3.82,1.95),METAL,ENV,bev=.02)
+          curve("Lanterne_bras",[(-2.35,3.80,2.05),(-2.35,3.66,2.15),(-2.35,3.58,2.08)],.025,METAL,ENV)
+          for z in (1.73,2.08): cube(f"Lanterne_cadre_{z}",(.32,.22,.035),(-2.35,3.54,z),METAL,ENV,bev=.01)
+          for sx in (-.145,.145):
+              for sy in (-.09,.09): rod(f"Lanterne_montant_{sx}_{sy}",(-2.35+sx,3.54+sy,1.75),(-2.35+sx,3.54+sy,2.06),.015,METAL,ENV,6)
+          cube("Lanterne_lueur",(.20,.12,.22),(-2.35,3.54,1.91),GLOW,ENV,bev=.02)
+          bpy.ops.mesh.primitive_cone_add(vertices=4,radius1=.24,radius2=.06,depth=.18,location=(-2.35,3.54,2.18),rotation=(0,0,math.pi/4))
+          roof=bpy.context.object; roof.name="Lanterne_toit"; roof.data.materials.append(METAL); relink(roof,ENV)
+
+          # Colliders simples pour Unity
+          for name,dims,loc in (("COL_Sol",(10,8.2,.12),(0,0,-.06)),("COL_Mur",(10,.2,2.9),(0,3.95,1.45))):
+              o=cube(name,dims,loc,None,COLL); o.display_type='WIRE'; o.hide_render=True; o["unity_collider"]=True
+          o=cyl("COL_Table",1.05,.78,(0,0,.39),None,COLL,12); o.display_type='WIRE'; o.hide_render=True; o["unity_collider"]=True
+
+          # Monde, éclairage et caméra
+          world=bpy.data.worlds.new("Ciel_tropical"); world.use_nodes=True; sc.world=world
+          bg=world.node_tree.nodes.get("Background"); bg.inputs["Color"].default_value=(.055,.24,.55,1); bg.inputs["Strength"].default_value=.42
+          bpy.ops.object.light_add(type='SUN',location=(4,-5,8)); sun=bpy.context.object; sun.name="Soleil_chaud"; sun.data.energy=3.3; sun.data.angle=math.radians(8); sun.data.color=(1.0,.66,.36); sun.rotation_euler=(math.radians(28),math.radians(-22),math.radians(-38)); relink(sun,LIGHT)
+          bpy.ops.object.light_add(type='AREA',location=(-3,-3,5)); fill=bpy.context.object; fill.name="Lumiere_ciel"; fill.data.energy=520; fill.data.shape='DISK'; fill.data.size=5.5; fill.data.color=(.25,.45,1.0); relink(fill,LIGHT)
+          bpy.ops.object.light_add(type='POINT',location=(-2.35,3.35,1.92)); lp=bpy.context.object; lp.name="Lumiere_lanterne"; lp.data.energy=105; lp.data.color=(1.0,.20,.025); lp.data.shadow_soft_size=.35; relink(lp,LIGHT)
+          bpy.ops.object.camera_add(location=(0,-9.65,4.10)); cam=bpy.context.object; cam.name="Camera_composition_image"; cam.data.lens=47; cam.data.sensor_width=36
+          cam.rotation_euler=(Vector((0,.72,1.32))-cam.location).to_track_quat('-Z','Y').to_euler(); sc.camera=cam
+
+          # Informations intégrées
+          sc["reference"]="Jardin tropical avec table ronde et quatre chaises"
+          sc["target_platform"]="Unity Android"
+          sc["scale"]="1 unité = 1 mètre"
+          text=bpy.data.texts.new("LISEZ_MOI_UNITY.txt")
+          text.write("Jardin tropical procédural inspiré de l'image de référence. Collections séparées, matériaux procéduraux, colliders simples et export GLB inclus. Pour Android, utilisez l'éclairage baked et des colliders primitifs.\n")
+
+          # Rendu, export, rapport et sauvegarde
+          bpy.ops.render.render(write_still=True)
+          for o in sc.objects: o.select_set(False)
+          for c in (ENV,FURN,VEG):
+              for o in c.all_objects:
+                  if o.type in {'MESH','CURVE','EMPTY'}: o.select_set(True)
+          try:
+              bpy.ops.export_scene.gltf(filepath=str(OUT/"jardin_tropical_unity.glb"),export_format='GLB',use_selection=True,export_apply=True,export_cameras=False,export_lights=False)
+          except Exception as e:
+              print("GLB export warning",e)
+          deps=bpy.context.evaluated_depsgraph_get(); tris=0; n=0
+          for o in sc.objects:
+              if o.hide_render or o.type not in {'MESH','CURVE'}: continue
+              try:
+                  eo=o.evaluated_get(deps); me=eo.to_mesh(); me.calc_loop_triangles(); tris+=len(me.loop_triangles); n+=1; eo.to_mesh_clear()
+              except Exception: pass
+          report=f"Objets: {len(sc.objects)}\nObjets géométriques rendus: {n}\nTriangles évalués: {tris}\nRendu: 1200x900 EEVEE Next\nÉchelle: 1 unité = 1 mètre\n"
+          (OUT/"rapport_scene.txt").write_text(report,encoding='utf-8'); print(report)
+          bpy.ops.wm.save_as_mainfile(filepath=str(OUT/"jardin_tropical_unity.blend"),compress=True)
+          PY
+
+      - name: Generate scene and render
+        shell: bash
+        run: |
+          mkdir -p build
+          "./blender-${BLENDER_VERSION}-linux-x64/blender" --background --factory-startup --python create_scene.py
+
+      - name: Validate outputs
+        shell: bash
+        run: |
+          test -s build/jardin_tropical_unity.blend
+          test -s build/jardin_tropical_rendu.png
+          test -s build/jardin_tropical_unity.glb
+          file build/jardin_tropical_unity.blend
+          file build/jardin_tropical_rendu.png
+          cat build/rapport_scene.txt
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: jardin-tropical-blender
+          path: |
+            build/jardin_tropical_unity.blend
+            build/jardin_tropical_rendu.png
+            build/jardin_tropical_unity.glb
+            build/rapport_scene.txt
+          retention-days: 3
+          compression-level: 6
